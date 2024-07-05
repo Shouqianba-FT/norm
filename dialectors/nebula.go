@@ -18,7 +18,7 @@ import (
 
 type (
 	NebulaDialector struct {
-		npool    *nebula.ConnectionPool
+		sPool    *nebula.SessionPool
 		username string
 		password string
 		space    string
@@ -33,18 +33,20 @@ func NewNebulaDialector(cfg DialectorConfig) (*NebulaDialector, error) {
 	if err != nil {
 		return &NebulaDialector{}, err
 	}
-	nConfig := nebula.PoolConfig{
-		TimeOut:         cfg.Timeout,
-		IdleTime:        cfg.IdleTime,
-		MaxConnPoolSize: cfg.MaxConnPoolSize,
-		MinConnPoolSize: cfg.MinConnPoolSize,
+	nConfig, err := nebula.NewSessionPoolConf(cfg.Username, cfg.Password, nAddresses, cfg.Space,
+		nebula.WithTimeOut(cfg.Timeout),
+		nebula.WithIdleTime(cfg.IdleTime),
+		nebula.WithMinSize(cfg.MinConnPoolSize),
+		nebula.WithMaxSize(cfg.MaxConnPoolSize))
+	if err != nil {
+		return &NebulaDialector{}, err
 	}
-	nPool, err := nebula.NewConnectionPool(nAddresses, nConfig, nebula.DefaultLogger{})
+	sPool, err := nebula.NewSessionPool(*nConfig, nebula.DefaultLogger{})
 	if err != nil {
 		return &NebulaDialector{}, errors.Wrap(err, "connect nebula fail")
 	}
 	return &NebulaDialector{
-		npool:    nPool,
+		sPool:    sPool,
 		username: cfg.Username,
 		password: cfg.Password,
 		space:    cfg.Space,
@@ -62,20 +64,7 @@ func MustNewNebulaDialector(cfg DialectorConfig) *NebulaDialector {
 
 // Execute TODO 可以缓存一个 session pool.
 func (d *NebulaDialector) Execute(stmt string) (*ResultSet, error) {
-	session, err := d.getSession()
-	if err != nil {
-		return &ResultSet{}, err
-	}
-	defer session.Release()
-
-	// TODO (nebula bug) 除了 root 用户外, nebula 不支持其他用户 ("use %s; %s", space, sql) 这种方式.
-	// sql = fmt.Sprintf("use %s; %s", space, sql)
-	_, err = session.Execute("use " + d.space)
-	if err != nil {
-		return &ResultSet{}, err
-	}
-
-	result, err := session.Execute(stmt)
+	result, err := d.sPool.Execute(stmt)
 	if err != nil {
 		return &ResultSet{}, err
 	}
@@ -86,12 +75,8 @@ func (d *NebulaDialector) Execute(stmt string) (*ResultSet, error) {
 	return &ResultSet{result}, nil
 }
 
-func (d *NebulaDialector) getSession() (*nebula.Session, error) {
-	return d.npool.GetSession(d.username, d.password)
-}
-
 func (d *NebulaDialector) Close() {
-	d.npool.Close()
+	d.sPool.Close()
 }
 
 // checkResultSet 检查是否成功执行
